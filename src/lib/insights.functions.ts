@@ -1,22 +1,59 @@
 import { createServerFn } from "@tanstack/react-start";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { attachFirebaseAuth } from "@/integrations/firebase/auth-attacher";
+import { db } from "@/integrations/firebase/client.server";
+import { collection, getDocs, query, where, getDoc, doc } from "firebase/firestore";
 
 export const getInsights = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
+  .middleware([attachFirebaseAuth])
   .handler(async ({ context }) => {
-    const { supabase, userId } = context;
+    const { user } = context;
+    if (!user) throw new Error("Not authenticated");
 
-    const [contractsRes, risksRes, extractionsRes, synthesisRes] = await Promise.all([
-      supabase.from("contracts").select("id, filename, status, created_at").eq("user_id", userId),
-      supabase.from("risks").select("id, contract_id, severity, category, explanation, recommendation, clause_text, created_at, contracts!inner(user_id, filename)").eq("contracts.user_id", userId),
-      supabase.from("extractions").select("contract_id, obligations, dates, renewal, confidence, missing_fields, contracts!inner(user_id, filename)").eq("contracts.user_id", userId),
-      supabase.from("synthesis").select("contract_id, summary, key_insights, action_items, contracts!inner(user_id, filename)").eq("contracts.user_id", userId),
+    // Get all contracts for the user
+    const contractsQuery = query(
+      collection(db, "contracts"),
+      where("user_id", "==", user.id)
+    );
+    const contractsSnap = await getDocs(contractsQuery);
+    const contracts = contractsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    // Get all related data for each contract
+    const [allRisks, allExtractions, allSynthesis] = await Promise.all([
+      Promise.all(contracts.map(async (contract) => {
+        const risksSnap = await getDocs(collection(db, `contracts/${contract.id}/risks`));
+        return risksSnap.docs.map(doc => ({ 
+          ...doc.data(), 
+          contract_id: contract.id,
+          contracts: { filename: contract.filename } 
+        }));
+      })),
+      Promise.all(contracts.map(async (contract) => {
+        const extractionSnap = await getDoc(doc(db, `contracts/${contract.id}/extractions`, "latest"));
+        if (extractionSnap.exists()) {
+          return { 
+            ...extractionSnap.data(), 
+            contract_id: contract.id,
+            contracts: { filename: contract.filename } 
+          };
+        }
+        return null;
+      })),
+      Promise.all(contracts.map(async (contract) => {
+        const synthesisSnap = await getDoc(doc(db, `contracts/${contract.id}/synthesis`, "latest"));
+        if (synthesisSnap.exists()) {
+          return { 
+            ...synthesisSnap.data(), 
+            contract_id: contract.id,
+            contracts: { filename: contract.filename } 
+          };
+        }
+        return null;
+      })),
     ]);
 
-    const contracts = contractsRes.data ?? [];
-    const risks = (risksRes.data ?? []) as any[];
-    const extractions = (extractionsRes.data ?? []) as any[];
-    const synthesis = (synthesisRes.data ?? []) as any[];
+    const risks = allRisks.flat();
+    const extractions = allExtractions.filter(e => e !== null);
+    const synthesis = allSynthesis.filter(s => s !== null);
 
     const total = contracts.length;
     const completed = contracts.filter((c) => c.status === "completed").length;

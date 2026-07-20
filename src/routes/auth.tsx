@@ -2,7 +2,9 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { ArrowLeft, Loader2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { auth, db } from "@/integrations/firebase/client";
+import { onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { doc, setDoc } from "firebase/firestore";
 
 export const Route = createFileRoute("/auth")({
   component: AuthPage,
@@ -17,9 +19,10 @@ function AuthPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navigate({ to: "/dashboard", replace: true });
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) navigate({ to: "/dashboard", replace: true });
     });
+    return () => unsubscribe();
   }, [navigate]);
 
   async function handleEmail(e: React.FormEvent) {
@@ -27,18 +30,19 @@ function AuthPage() {
     setLoading(true);
     try {
       if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
-          email, password,
-          options: {
-            emailRedirectTo: window.location.origin,
-            data: { full_name: fullName },
-          },
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        await updateProfile(userCredential.user, { displayName: fullName });
+        
+        // Create user profile in Firestore
+        await setDoc(doc(db, "profiles", userCredential.user.uid), {
+          full_name: fullName,
+          email: email,
+          created_at: new Date().toISOString(),
         });
-        if (error) throw error;
+        
         toast.success("Account created — you're in!");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
+        await signInWithEmailAndPassword(auth, email, password);
       }
       navigate({ to: "/dashboard", replace: true });
     } catch (err) {

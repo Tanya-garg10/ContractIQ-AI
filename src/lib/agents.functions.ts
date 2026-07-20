@@ -1,6 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { attachFirebaseAuth } from "@/integrations/firebase/auth-attacher";
+import { db, storage } from "@/integrations/firebase/client.server";
 import { z } from "zod";
+import { doc, getDoc, setDoc, collection, addDoc, getDocs, query, where, orderBy, limit, deleteDoc, updateDoc } from "firebase/firestore";
+import { ref, getBytes } from "firebase/storage";
 
 // Structured JSON shape the model returns. Everything is optional so we can
 // gracefully persist partial output.
@@ -64,78 +67,64 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 export const startAnalysis = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([attachFirebaseAuth])
   .inputValidator((input: unknown) =>
-    z.object({ contract_id: z.string().uuid() }).parse(input),
+    z.object({ contract_id: z.string() }).parse(input),
   )
   .handler(async ({ data, context }) => {
-    const { supabase, userId } = context;
+    const { user } = context;
     const contractId = data.contract_id;
 
-    const { data: contract, error: cErr } = await supabase
-      .from("contracts")
-      .select("id, user_id, filename, storage_path, mime")
-      .eq("id", contractId)
-      .maybeSingle();
-    if (cErr || !contract) throw new Error(cErr?.message ?? "Contract not found");
-    if (contract.user_id !== userId) throw new Error("Forbidden");
+    const contractRef = doc(db, "contracts", contractId);
+    const contractSnap = await getDoc(contractRef);
+    
+    if (!contractSnap.exists()) throw new Error("Contract not found");
+    const contract = contractSnap.data();
+    if (contract.user_id !== user.id) throw new Error("Forbidden");
 
     // Idempotency: don't restart a running/completed run.
-    const { data: existing } = await supabase
-      .from("analysis_runs")
-      .select("id, status")
-      .eq("contract_id", contractId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const runsQuery = query(
+      collection(db, `contracts/${contractId}/analysis_runs`),
+      orderBy("created_at", "desc"),
+      limit(1)
+    );
+    const existingRuns = await getDocs(runsQuery);
+    const existing = existingRuns.docs[0]?.data();
+    
     if (existing && (existing.status === "running" || existing.status === "completed")) {
-      return { run_id: existing.id, status: existing.status };
+      return { run_id: existingRuns.docs[0].id, status: existing.status };
     }
 
-    const { data: run, error: rErr } = await supabase
-      .from("analysis_runs")
-      .insert({
-        contract_id: contractId,
-        status: "running",
-        current_agent: "ingestion",
-        agent_states: states({ ingestion: "running" }),
-        started_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single();
-    if (rErr || !run) throw new Error(rErr?.message ?? "Failed to create run");
+    const runRef = await addDoc(collection(db, `contracts/${contractId}/analysis_runs`), {
+      contract_id: contractId,
+      status: "running",
+      current_agent: "ingestion",
+      agent_states: states({ ingestion: "running" }),
+      started_at: new Date().toISOString(),
+    });
 
-    await supabase.from("contracts").update({ status: "analyzing" }).eq("id", contractId);
+    await updateDoc(contractRef, { status: "analyzing" });
 
     const setStage = async (
       current: AgentKey | null,
       map: Partial<Record<AgentKey, AgentState>>,
     ) => {
-      await supabase
-        .from("analysis_runs")
-        .update({ current_agent: current, agent_states: states(map) })
-        .eq("id", run.id);
+      await updateDoc(runRef, { current_agent: current, agent_states: states(map) });
     };
 
     const fail = async (msg: string) => {
-      await supabase
-        .from("analysis_runs")
-        .update({
-          status: "failed",
-          error: msg.slice(0, 500),
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", run.id);
-      await supabase.from("contracts").update({ status: "failed" }).eq("id", contractId);
+      await updateDoc(runRef, {
+        status: "failed",
+        error: msg.slice(0, 500),
+        completed_at: new Date().toISOString(),
+      });
+      await updateDoc(contractRef, { status: "failed" });
     };
 
     try {
       // ── Ingestion: pull the file out of storage ──────────────────────────
-      const { data: file, error: dlErr } = await supabase.storage
-        .from("contracts")
-        .download(contract.storage_path);
-      if (dlErr || !file) throw new Error(dlErr?.message ?? "Failed to download contract file");
-      const buf = new Uint8Array(await file.arrayBuffer());
+      const storageRef = ref(storage, contract.storage_path);
+      const buf = await getBytes(storageRef);
       const b64 = bytesToBase64(buf);
 
       await setStage("parser", { ingestion: "done", parser: "running" });
@@ -237,7 +226,7 @@ export const startAnalysis = createServerFn({ method: "POST" })
         validator: "running",
       });
 
-      await supabase.from("extractions").upsert({
+      await setDoc(doc(db, `contracts/${contractId}/extractions`, "latest"), {
         contract_id: contractId,
         parties: (ex.parties as any) ?? null,
         dates: (ex.dates as any) ?? null,
@@ -259,10 +248,15 @@ export const startAnalysis = createServerFn({ method: "POST" })
         risk: "running",
       });
 
-      await supabase.from("risks").delete().eq("contract_id", contractId);
+      // Delete existing risks
+      const existingRisks = await getDocs(collection(db, `contracts/${contractId}/risks`));
+      for (const riskDoc of existingRisks.docs) {
+        await deleteDoc(riskDoc.ref);
+      }
+      
       if (risks.length) {
-        await supabase.from("risks").insert(
-          risks.map((r) => ({
+        for (const r of risks) {
+          await addDoc(collection(db, `contracts/${contractId}/risks`), {
             contract_id: contractId,
             severity: ["high", "medium", "low"].includes(String(r.severity))
               ? (r.severity as string)
@@ -271,8 +265,8 @@ export const startAnalysis = createServerFn({ method: "POST" })
             clause_text: (r.clause_text as string) ?? null,
             explanation: (r.explanation as string) ?? null,
             recommendation: (r.recommendation as string) ?? null,
-          })),
-        );
+          });
+        }
       }
 
       await setStage("synthesis", {
@@ -284,7 +278,7 @@ export const startAnalysis = createServerFn({ method: "POST" })
         synthesis: "running",
       });
 
-      await supabase.from("synthesis").upsert({
+      await setDoc(doc(db, `contracts/${contractId}/synthesis`, "latest"), {
         contract_id: contractId,
         summary: (syn.summary as string) ?? null,
         key_insights: (syn.key_insights as any) ?? null,
@@ -292,23 +286,20 @@ export const startAnalysis = createServerFn({ method: "POST" })
         action_items: (syn.action_items as any) ?? null,
       });
 
-      await supabase
-        .from("analysis_runs")
-        .update({
-          status: "completed",
-          current_agent: null,
-          agent_states: states({
-            ingestion: "done",
-            parser: "done",
-            extractor: "done",
-            validator: "done",
-            risk: "done",
-            synthesis: "done",
-          }),
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", run.id);
-      await supabase.from("contracts").update({ status: "completed" }).eq("id", contractId);
+      await updateDoc(runRef, {
+        status: "completed",
+        current_agent: null,
+        agent_states: states({
+          ingestion: "done",
+          parser: "done",
+          extractor: "done",
+          validator: "done",
+          risk: "done",
+          synthesis: "done",
+        }),
+        completed_at: new Date().toISOString(),
+      });
+      await updateDoc(contractRef, { status: "completed" });
 
       return { run_id: run.id, status: "completed" as const };
     } catch (err) {
@@ -319,37 +310,34 @@ export const startAnalysis = createServerFn({ method: "POST" })
   });
 
 export const getAnalysis = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([attachFirebaseAuth])
   .inputValidator((input: unknown) =>
-    z.object({ contract_id: z.string().uuid() }).parse(input),
+    z.object({ contract_id: z.string() }).parse(input),
   )
   .handler(async ({ data, context }) => {
-    const { supabase } = context;
     const cid = data.contract_id;
-    const [contract, run, extraction, risksRes, synthesis] = await Promise.all([
-      supabase.from("contracts").select("*").eq("id", cid).maybeSingle(),
-      supabase
-        .from("analysis_runs")
-        .select("*")
-        .eq("contract_id", cid)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-      supabase.from("extractions").select("*").eq("contract_id", cid).maybeSingle(),
-      supabase.from("risks").select("*").eq("contract_id", cid),
-      supabase.from("synthesis").select("*").eq("contract_id", cid).maybeSingle(),
+    const [contractSnap, runsSnap, extractionSnap, risksSnap, synthesisSnap] = await Promise.all([
+      getDoc(doc(db, "contracts", cid)),
+      getDocs(query(
+        collection(db, `contracts/${cid}/analysis_runs`),
+        orderBy("created_at", "desc"),
+        limit(1)
+      )),
+      getDoc(doc(db, `contracts/${cid}/extractions`, "latest")),
+      getDocs(collection(db, `contracts/${cid}/risks`)),
+      getDoc(doc(db, `contracts/${cid}/synthesis`, "latest")),
     ]);
 
     const severityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
-    const risks = (risksRes.data ?? []).sort(
-      (a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3),
-    );
+    const risks = risksSnap.docs
+      .map(doc => doc.data())
+      .sort((a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3));
 
     return {
-      contract: contract.data,
-      run: run.data,
-      extraction: extraction.data,
+      contract: contractSnap.exists() ? contractSnap.data() : null,
+      run: runsSnap.docs[0]?.data() || null,
+      extraction: extractionSnap.exists() ? extractionSnap.data() : null,
       risks,
-      synthesis: synthesis.data,
+      synthesis: synthesisSnap.exists() ? synthesisSnap.data() : null,
     };
   });

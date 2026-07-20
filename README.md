@@ -89,36 +89,44 @@ Allows users to ask natural language questions such as:
 * TypeScript
 * Tailwind CSS
 * Vite
+* TanStack Start (SSR framework)
+* TanStack Router
+* TanStack Query
 
-### Backend
+### Backend & Infrastructure
 
-* FastAPI
+* Firebase (Authentication, Firestore Database, Storage)
+* Firebase Functions (serverless)
 
 ### AI & Agents
 
-* LangGraph / LangChain
-* GPT-5.5 or Gemini
+* OpenAI GPT-4o-mini
+* Custom multi-agent pipeline
 * Retrieval-Augmented Generation (RAG)
 
 ### Document Processing
 
-* PaddleOCR / Tesseract OCR
+* Firebase Storage
 * PDF & DOCX parsing
+* Image OCR support
 
 ### Database
 
-* PostgreSQL
-* ChromaDB (Vector Database)
+* Firebase Firestore (NoSQL)
+* Firebase Storage (file storage)
 
 ### Deployment
 
 * Vercel
-* Render
+* Firebase Hosting
 
 ## 📂 Workflow
 
 ```text
 User Upload
+      │
+      ▼
+Firebase Storage
       │
       ▼
 Ingestion Agent
@@ -133,7 +141,7 @@ Extractor Agent
 Validator Agent
       │
       ▼
-Vector Database (RAG)
+Firestore Database
       │
       ▼
 Risk Analysis Agent
@@ -154,6 +162,73 @@ AI Report + Contract Chat
 * Service Agreements
 * Procurement Documents
 * Legal Compliance
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+* Node.js 18+ 
+* Bun (recommended) or npm/yarn
+* Firebase account and project
+
+### Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/Tanya-garg10/ContractIQ-AI.git
+cd ContractIQ-AI
+```
+
+2. Install dependencies:
+```bash
+bun install
+```
+
+3. Set up Firebase:
+   - Create a new Firebase project at [firebase.google.com](https://firebase.google.com)
+   - Enable Authentication (Email/Password)
+   - Create Firestore Database
+   - Create Storage bucket
+   - Get your Firebase configuration from Project Settings
+
+4. Set up environment variables:
+Create a `.env` file in the root directory:
+```env
+VITE_FIREBASE_API_KEY=your_firebase_api_key
+VITE_FIREBASE_AUTH_DOMAIN=your_project_id.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your_project_id
+VITE_FIREBASE_STORAGE_BUCKET=your_project_id.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+VITE_FIREBASE_APP_ID=your_app_id
+VITE_FIREBASE_MEASUREMENT_ID=your_measurement_id
+```
+
+5. Run the development server:
+```bash
+bun run dev
+```
+
+The application will be available at `http://localhost:5173`
+
+### Firebase Setup Details
+
+**Authentication:**
+- Enable Email/Password sign-in method
+- Configure any additional providers as needed
+
+**Firestore Database:**
+- Create database in production mode
+- Set up security rules for user data isolation
+- Collections will be auto-created: `contracts`, `profiles`, etc.
+
+**Storage:**
+- Create storage bucket for contract files
+- Configure security rules for user file access
+- Set up CORS rules if needed
+
+**OpenAI API:**
+- Add your OpenAI API key as environment variable for AI features
+- Required for contract analysis and chat functionality
 
 ## 🌟 Future Enhancements
 

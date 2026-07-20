@@ -1,15 +1,24 @@
 import { createFileRoute, Outlet, redirect, Link, useNavigate } from "@tanstack/react-router";
-import { supabase } from "@/integrations/supabase/client";
+import { auth, db } from "@/integrations/firebase/client";
 import { useEffect, useState } from "react";
 import { LogOut, LayoutDashboard, BarChart3 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { onAuthStateChanged, signOut as firebaseSignOut } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
   beforeLoad: async () => {
-    const { data, error } = await supabase.auth.getUser();
-    if (error || !data.user) throw redirect({ to: "/auth" });
-    return { user: data.user };
+    return new Promise((resolve, reject) => {
+      const unsubscribe = onAuthStateChanged(auth, (user) => {
+        unsubscribe();
+        if (!user) {
+          reject(redirect({ to: "/auth" }));
+        } else {
+          resolve({ user: { id: user.uid, email: user.email, displayName: user.displayName } });
+        }
+      });
+    });
   },
   component: AuthedLayout,
 });
@@ -21,14 +30,25 @@ function AuthedLayout() {
   const [displayName, setDisplayName] = useState<string>(user.email ?? "");
 
   useEffect(() => {
-    supabase.from("profiles").select("full_name").eq("id", user.id).maybeSingle()
-      .then(({ data }) => { if (data?.full_name) setDisplayName(data.full_name); });
+    const fetchProfile = async () => {
+      try {
+        const profileRef = doc(db, "profiles", user.id);
+        const profileSnap = await getDoc(profileRef);
+        if (profileSnap.exists()) {
+          const profileData = profileSnap.data();
+          if (profileData.full_name) setDisplayName(profileData.full_name);
+        }
+      } catch (error) {
+        console.error("Error fetching profile:", error);
+      }
+    };
+    fetchProfile();
   }, [user.id]);
 
   async function signOut() {
     await queryClient.cancelQueries();
     queryClient.clear();
-    await supabase.auth.signOut();
+    await firebaseSignOut(auth);
     navigate({ to: "/auth", replace: true });
   }
 

@@ -4,7 +4,8 @@ import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Upload, FileText, Trash2, Loader2, CheckCircle2, Clock, AlertCircle } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { storage } from "@/integrations/firebase/client";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { registerContract, listContracts, deleteContract } from "@/lib/contracts.functions";
 import { formatDistanceToNow } from "date-fns";
 
@@ -46,11 +47,12 @@ function Dashboard() {
     setUploading(true);
     try {
       const ext = file.name.split(".").pop() ?? "bin";
-      const path = `${user.id}/${crypto.randomUUID()}.${ext}`;
-      const { error: upErr } = await supabase.storage.from("contracts").upload(path, file, {
+      const path = `contracts/${user.id}/${crypto.randomUUID()}.${ext}`;
+      const storageRef = ref(storage, path);
+      
+      await uploadBytes(storageRef, file, {
         contentType: file.type || "application/octet-stream",
       });
-      if (upErr) throw upErr;
 
       const { contract_id } = await register({ data: {
         filename: file.name,
