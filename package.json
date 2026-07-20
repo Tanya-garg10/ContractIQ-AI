@@ -4,10 +4,10 @@
   "sideEffects": false,
   "type": "module",
   "scripts": {
-    "dev": "bunx tanstack start",
-    "build": "bunx tanstack build",
-    "build:dev": "bunx tanstack build --mode development",
-    "preview": "bunx tanstack start",
+    "dev": "vite dev",
+    "build": "vite build",
+    "build:dev": "vite build --mode development",
+    "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
