@@ -8,9 +8,7 @@ export default defineConfig({
   plugins: [
     tailwindcss(),
     react(),
-    TanStackRouterVite({
-      server: { entry: "server" },
-    }),
+    TanStackRouterVite(),
   ],
   resolve: {
     alias: {
