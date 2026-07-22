@@ -3,7 +3,7 @@ services:
     name: contractiq-ai
     env: node
     buildCommand: npm install && npm run build
-    startCommand: npm run preview
+    startCommand: npm run start
     envVars:
       - key: PORT
         value: 10000
