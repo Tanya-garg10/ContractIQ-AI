@@ -21,3 +21,5 @@ services:
         sync: false
       - key: VITE_FIREBASE_MEASUREMENT_ID
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
