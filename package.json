@@ -4,11 +4,11 @@
   "sideEffects": false,
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
+    "dev": "if [ -f .output/server/index.mjs ]; then NODE_ENV=production node .output/server/index.mjs; else vite dev; fi",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
-    "start": "node .output/server/index.mjs",
+    "start": "NODE_ENV=production node .output/server/index.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
