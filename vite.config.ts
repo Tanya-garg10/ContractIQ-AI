@@ -9,7 +9,9 @@ export default defineConfig({
   plugins: [
     tailwindcss(),
     tanstackStart(),
-    nitro(),
+    nitro({
+      preset: "node-server",
+    }),
     react(),
   ],
   resolve: {
@@ -21,5 +23,9 @@ export default defineConfig({
     host: true,
     port: 10000,
     allowedHosts: ["contractiq-ai-2et9.onrender.com"],
+  },
+  preview: {
+    host: true,
+    port: 10000,
   },
 });
