@@ -11,6 +11,9 @@ export default defineConfig({
     tanstackStart(),
     nitro({
       preset: "node-server",
+      dev: {
+        enabled: false,
+      },
     }),
     react(),
   ],
