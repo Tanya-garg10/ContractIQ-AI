@@ -20,5 +20,6 @@ export default defineConfig({
   server: {
     host: true,
     port: 10000,
+    allowedHosts: ["contractiq-ai-2et9.onrender.com"],
   },
 });
