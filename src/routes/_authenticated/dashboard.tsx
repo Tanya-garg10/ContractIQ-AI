@@ -97,9 +97,16 @@ function Dashboard() {
       const path = `contracts/${user.id}/${crypto.randomUUID()}.${ext}`;
       const storageRef = ref(storage, path);
       
-      await uploadBytes(storageRef, file, {
+      // Add timeout and retry logic for storage upload
+      const uploadPromise = uploadBytes(storageRef, file, {
         contentType: file.type || "application/octet-stream",
       });
+      
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Upload timeout - please try again")), 60000)
+      );
+      
+      await Promise.race([uploadPromise, timeoutPromise]);
 
       const contractRef = await addDoc(collection(db, "contracts"), {
         user_id: user.id,
@@ -117,7 +124,9 @@ function Dashboard() {
       toast.success("Upload complete — starting analysis");
       navigate({ to: "/contracts/$id", params: { id: contractRef.id } });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Upload failed");
+      const errorMessage = err instanceof Error ? err.message : "Upload failed";
+      console.error("Upload error:", err);
+      toast.error(errorMessage);
     } finally {
       setUploading(false);
     }

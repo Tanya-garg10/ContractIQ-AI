@@ -187,8 +187,19 @@ export const startAnalysis = createServerFn({ method: "POST" })
     };
 
     try {
+      if (!storage) {
+        throw new Error("Firebase Storage is not properly configured");
+      }
+      
       const storageRef = ref(storage, contract.storage_path);
-      const buf = await getBytes(storageRef);
+      
+      // Add timeout for storage operations
+      const storagePromise = getBytes(storageRef);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Storage operation timeout")), 60000)
+      );
+      
+      const buf = await Promise.race([storagePromise, timeoutPromise]) as Uint8Array;
       const b64 = bytesToBase64(buf);
 
       await setStage("parser", { ingestion: "done", parser: "running" });

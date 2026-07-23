@@ -15,9 +15,29 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
+// Validate Firebase config
+if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
+  console.error("Firebase configuration is incomplete. Please check environment variables.");
+}
+
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const db = getFirestore(app);
-const storage = getStorage(app);
+
+// Initialize storage with proper error handling
+let storage;
+try {
+  storage = getStorage(app);
+  
+  // Log storage bucket for debugging
+  if (firebaseConfig.storageBucket) {
+    console.log(`Firebase Storage initialized with bucket: ${firebaseConfig.storageBucket}`);
+  } else {
+    console.warn("Firebase Storage bucket not configured");
+  }
+} catch (error) {
+  console.error("Failed to initialize Firebase Storage:", error);
+  storage = null;
+}
 
 export { app, auth, db, storage };
