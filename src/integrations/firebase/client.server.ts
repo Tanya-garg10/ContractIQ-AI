@@ -3,16 +3,14 @@ import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
-// For server-side, you would need service account credentials
-// For now, we'll use the same config (in production, use service account)
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+  apiKey: "AIzaSyDiiFNt97EPQBqqdbf1yAzwck4nf8SA9P4",
+  authDomain: "contractiq-a1417.firebaseapp.com",
+  projectId: "contractiq-a1417",
+  storageBucket: "contractiq-a1417.firebasestorage.app",
+  messagingSenderId: "170662491700",
+  appId: "1:170662491700:web:ee9ddd8d1821ed526b3c61",
+  measurementId: "G-WM70GEDVQ6"
 };
 
 // Validate Firebase config
