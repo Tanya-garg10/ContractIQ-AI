@@ -18,7 +18,7 @@ import {
   AlertCircle,
   Send,
 } from "lucide-react";
-import { startAnalysis } from "@/lib/agents.functions";
+import { startAnalysis, getAnalysis } from "@/lib/agents.functions";
 import { askContract } from "@/lib/chat.functions";
 import { db, storage } from "@/integrations/firebase/client";
 import { doc, getDoc, setDoc, collection, addDoc, getDocs, query, orderBy, limit, deleteDoc, updateDoc } from "firebase/firestore";
@@ -46,37 +46,11 @@ function ContractDetail() {
   const { user } = Route.useRouteContext();
   const [tab, setTab] = useState<"summary" | "clauses" | "risks" | "chat">("summary");
   const startAnalysisFn = useServerFn(startAnalysis);
-
-  const load = async (cid: string) => {
-    const [contractSnap, runsSnap, extractionSnap, risksSnap, synthesisSnap] = await Promise.all([
-      getDoc(doc(db, "contracts", cid)),
-      getDocs(query(
-        collection(db, `contracts/${cid}/analysis_runs`),
-        orderBy("created_at", "desc"),
-        limit(1)
-      )),
-      getDoc(doc(db, `contracts/${cid}/extractions`, "latest")),
-      getDocs(collection(db, `contracts/${cid}/risks`)),
-      getDoc(doc(db, `contracts/${cid}/synthesis`, "latest")),
-    ]);
-
-    const severityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
-    const risks = risksSnap.docs
-      .map(doc => doc.data())
-      .sort((a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3));
-
-    return {
-      contract: contractSnap.exists() ? contractSnap.data() : null,
-      run: runsSnap.docs[0]?.data() || null,
-      extraction: extractionSnap.exists() ? extractionSnap.data() : null,
-      risks,
-      synthesis: synthesisSnap.exists() ? synthesisSnap.data() : null,
-    };
-  };
+  const getAnalysisFn = useServerFn(getAnalysis);
 
   const { data, isLoading } = useQuery({
     queryKey: ["analysis", id],
-    queryFn: () => load(id),
+    queryFn: () => getAnalysisFn({ data: { contract_id: id } }),
     refetchInterval: (q) => {
       const s = q.state.data?.run?.status;
       return s === "completed" || s === "failed" ? false : 2000;
