@@ -18,8 +18,11 @@ import {
   AlertCircle,
   Send,
 } from "lucide-react";
-import { getAnalysis, startAnalysis } from "@/lib/agents.functions";
-import { askContract, listChatMessages } from "@/lib/chat.functions";
+import { startAnalysis } from "@/lib/agents.functions";
+import { askContract } from "@/lib/chat.functions";
+import { db, storage } from "@/integrations/firebase/client";
+import { doc, getDoc, setDoc, collection, addDoc, getDocs, query, orderBy, limit, deleteDoc, updateDoc } from "firebase/firestore";
+import { ref, getBytes } from "firebase/storage";
 
 
 export const Route = createFileRoute("/_authenticated/contracts/$id")({
@@ -40,13 +43,40 @@ type AgentStatus = "queued" | "running" | "done";
 
 function ContractDetail() {
   const { id } = Route.useParams();
+  const { user } = Route.useRouteContext();
   const [tab, setTab] = useState<"summary" | "clauses" | "risks" | "chat">("summary");
-  const load = useServerFn(getAnalysis);
-  const start = useServerFn(startAnalysis);
+  const startAnalysisFn = useServerFn(startAnalysis);
+
+  const load = async (cid: string) => {
+    const [contractSnap, runsSnap, extractionSnap, risksSnap, synthesisSnap] = await Promise.all([
+      getDoc(doc(db, "contracts", cid)),
+      getDocs(query(
+        collection(db, `contracts/${cid}/analysis_runs`),
+        orderBy("created_at", "desc"),
+        limit(1)
+      )),
+      getDoc(doc(db, `contracts/${cid}/extractions`, "latest")),
+      getDocs(collection(db, `contracts/${cid}/risks`)),
+      getDoc(doc(db, `contracts/${cid}/synthesis`, "latest")),
+    ]);
+
+    const severityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
+    const risks = risksSnap.docs
+      .map(doc => doc.data())
+      .sort((a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3));
+
+    return {
+      contract: contractSnap.exists() ? contractSnap.data() : null,
+      run: runsSnap.docs[0]?.data() || null,
+      extraction: extractionSnap.exists() ? extractionSnap.data() : null,
+      risks,
+      synthesis: synthesisSnap.exists() ? synthesisSnap.data() : null,
+    };
+  };
 
   const { data, isLoading } = useQuery({
     queryKey: ["analysis", id],
-    queryFn: () => load({ data: { contract_id: id } }),
+    queryFn: () => load(id),
     refetchInterval: (q) => {
       const s = q.state.data?.run?.status;
       return s === "completed" || s === "failed" ? false : 2000;
@@ -59,6 +89,16 @@ function ContractDetail() {
   const risks = data?.risks ?? [];
   const synthesis = data?.synthesis;
 
+  const startClientAnalysis = async (cid: string) => {
+    try {
+      await startAnalysisFn({ data: { contract_id: cid } });
+    } catch (error) {
+      console.error("Analysis failed:", error);
+      throw error;
+    }
+  };
+
+
   // Auto-trigger analysis if none has started yet.
   const triggered = useRef(false);
   useEffect(() => {
@@ -66,10 +106,8 @@ function ContractDetail() {
     if (!contract) return;
     if (run && (run.status === "running" || run.status === "completed")) return;
     triggered.current = true;
-    start({ data: { contract_id: id } }).catch(() => {
-      // Errors surface via the polled run row (status=failed, error message).
-    });
-  }, [contract, run, id, start]);
+    startClientAnalysis(id).catch(() => {});
+  }, [contract, run, id]);
 
   const agentStates = useMemo<Record<AgentKey, AgentStatus>>(() => {
     const raw = (run?.agent_states ?? {}) as Record<string, string>;
@@ -196,7 +234,7 @@ function ContractDetail() {
               <button
                 onClick={() => {
                   triggered.current = false;
-                  start({ data: { contract_id: id } }).catch(() => {});
+                  startClientAnalysis(id).catch(() => {});
                 }}
                 className="mt-6 rounded-md bg-gold px-4 py-2 text-sm font-medium text-gold-foreground hover:opacity-90"
               >
@@ -554,20 +592,76 @@ const SUGGESTED = [
 
 function ChatPanel({ contractId }: { contractId: string }) {
   const qc = useQueryClient();
-  const listFn = useServerFn(listChatMessages);
   const askFn = useServerFn(askContract);
+  const { user } = Route.useRouteContext();
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { data: messages = [], isLoading } = useQuery({
     queryKey: ["chat", contractId],
-    queryFn: () => listFn({ data: { contract_id: contractId } }),
+    queryFn: async () => {
+      const q = query(collection(db, `contracts/${contractId}/chat_messages`), orderBy("created_at", "asc"));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({
+        id: doc.id,
+        role: doc.data().role,
+        content: doc.data().content,
+        created_at: doc.data().created_at,
+      }));
+    }
   });
 
   const ask = useMutation({
-    mutationFn: (question: string) => askFn({ data: { contract_id: contractId, question } }),
+    mutationFn: async (question: string) => {
+      const [extractionSnap, synthesisSnap, risksSnap, historySnap] = await Promise.all([
+        getDoc(doc(db, `contracts/${contractId}/extractions`, "latest")),
+        getDoc(doc(db, `contracts/${contractId}/synthesis`, "latest")),
+        getDocs(collection(db, `contracts/${contractId}/risks`)),
+        getDocs(query(
+          collection(db, `contracts/${contractId}/chat_messages`),
+          orderBy("created_at", "asc"),
+          limit(20)
+        )),
+      ]);
+
+      const extraction = extractionSnap.exists() ? extractionSnap.data() : null;
+      const synthesis = synthesisSnap.exists() ? synthesisSnap.data() : null;
+      const risks = risksSnap.docs.map(doc => doc.data());
+      const history = historySnap.docs.map(doc => ({
+        role: doc.data().role,
+        content: doc.data().content,
+      }));
+
+      await addDoc(collection(db, `contracts/${contractId}/chat_messages`), {
+        contract_id: contractId,
+        user_id: user.id,
+        role: "user",
+        content: question,
+        created_at: new Date().toISOString(),
+      });
+
+      const contextJson = JSON.stringify(
+        { extraction, synthesis, risks },
+        null,
+        2
+      ).slice(0, 60_000);
+
+      const historyFormatted = history.map((m) => ({
+        role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
+        content: m.content,
+      }));
+
+      const { answer } = await askFn({ data: { question, contextJson, history: historyFormatted } });
+
+      await addDoc(collection(db, `contracts/${contractId}/chat_messages`), {
+        contract_id: contractId,
+        user_id: user.id,
+        role: "assistant",
+        content: answer,
+        created_at: new Date().toISOString(),
+      });
+    },
     onMutate: () => {
-      // Optimistically show the user message immediately.
       qc.setQueryData(["chat", contractId], (prev: any[] = []) => [
         ...prev,
         {
@@ -697,4 +791,3 @@ function ChatBubble({ role, content }: { role: string; content: string }) {
     </div>
   );
 }
-

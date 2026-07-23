@@ -4,9 +4,9 @@ import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Upload, FileText, Trash2, Loader2, CheckCircle2, Clock, AlertCircle } from "lucide-react";
-import { storage } from "@/integrations/firebase/client";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { registerContract, listContracts, deleteContract } from "@/lib/contracts.functions";
+import { storage, db } from "@/integrations/firebase/client";
+import { ref, uploadBytes, deleteObject } from "firebase/storage";
+import { collection, addDoc, getDocs, query, where, orderBy, deleteDoc, doc, getDoc } from "firebase/firestore";
 import { formatDistanceToNow } from "date-fns";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
@@ -20,13 +20,50 @@ function Dashboard() {
   const { user } = Route.useRouteContext();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const list = useServerFn(listContracts);
-  const register = useServerFn(registerContract);
-  const del = useServerFn(deleteContract);
-
   const { data: contracts = [], isLoading } = useQuery({
     queryKey: ["contracts"],
-    queryFn: () => list(),
+    queryFn: async () => {
+      const q = query(collection(db, "contracts"), where("user_id", "==", user.id), orderBy("created_at", "desc"));
+      const snapshot = await getDocs(q);
+      
+      const contracts = await Promise.all(snapshot.docs.map(async (d) => {
+        const data = d.data();
+        const risksSnapshot = await getDocs(collection(db, `contracts/${d.id}/risks`));
+        const risks = risksSnapshot.docs.map(rd => rd.data());
+        
+        const synthesisSnapshot = await getDocs(collection(db, `contracts/${d.id}/synthesis`));
+        const synthesis = synthesisSnapshot.docs[0]?.data();
+        
+        const extractionsSnapshot = await getDocs(collection(db, `contracts/${d.id}/extractions`));
+        const extractions = extractionsSnapshot.docs[0]?.data();
+
+        const counts = { high: 0, medium: 0, low: 0 };
+        for (const r of risks) {
+          const s = (r.severity ?? "").toLowerCase();
+          if (s === "high") counts.high++;
+          else if (s === "medium") counts.medium++;
+          else if (s === "low") counts.low++;
+        }
+
+        const partiesRaw = extractions?.parties;
+        const parties: string[] = Array.isArray(partiesRaw)
+          ? partiesRaw.map((p: any) => (typeof p === "string" ? p : p?.name)).filter(Boolean)
+          : [];
+
+        return {
+          id: d.id,
+          filename: data.filename,
+          status: data.status,
+          size: data.size,
+          created_at: data.created_at,
+          summary: synthesis?.summary ?? null,
+          risk_counts: counts,
+          parties,
+          confidence: extractions?.confidence ?? null,
+        };
+      }));
+      return contracts;
+    },
   });
 
   const [uploading, setUploading] = useState(false);
@@ -34,7 +71,17 @@ function Dashboard() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const deleteMut = useMutation({
-    mutationFn: (id: string) => del({ data: { id } }),
+    mutationFn: async (id: string) => {
+      const contractRef = doc(db, "contracts", id);
+      const contractSnap = await getDoc(contractRef);
+      if (contractSnap.exists()) {
+        const contractData = contractSnap.data();
+        if (contractData.storage_path) {
+          await deleteObject(ref(storage, contractData.storage_path));
+        }
+      }
+      await deleteDoc(contractRef);
+    },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["contracts"] }); toast.success("Contract deleted"); },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Delete failed"),
   });
@@ -54,22 +101,27 @@ function Dashboard() {
         contentType: file.type || "application/octet-stream",
       });
 
-      const { contract_id } = await register({ data: {
+      const contractRef = await addDoc(collection(db, "contracts"), {
+        user_id: user.id,
         filename: file.name,
         storage_path: path,
         mime: file.type || "application/octet-stream",
         size: file.size,
-      }});
+        status: "pending",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        risk_counts: { high: 0, medium: 0, low: 0 },
+      });
 
       qc.invalidateQueries({ queryKey: ["contracts"] });
       toast.success("Upload complete — starting analysis");
-      navigate({ to: "/contracts/$id", params: { id: contract_id } });
+      navigate({ to: "/contracts/$id", params: { id: contractRef.id } });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setUploading(false);
     }
-  }, [user.id, register, qc, navigate]);
+  }, [user.id, qc, navigate]);
 
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
